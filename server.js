@@ -4,13 +4,11 @@ import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
 import { toBytes } from "viem";
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import cors from 'cors';
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import cors from "cors";
 import * as fs from "fs";
-import { sign } from "crypto";
-
 
 const app = express();
 const server = createServer(app);
@@ -23,7 +21,7 @@ app.use(express.json());
 // Setup Socket.IO server
 const io = new Server(server, {
     cors: {
-        origin: '*', // Allow any origin for development
+        origin: '*',
         methods: ['GET', 'POST'],
     },
 });
@@ -32,20 +30,17 @@ const io = new Server(server, {
 io.on('connection', (socket) => {
     console.log('New client connected', socket.id);
     socket.emit('connection', null);
-
     socket.on('disconnect', () => {
         console.log('Client disconnected', socket.id);
     });
 });
 
-// Client mappings
-const addressToClientMap = new Map();
-
-
-//   Set up the XMTP client with the wallet and database path
+// Create the cache folder if it does not exist
 if (!fs.existsSync(`.cache`)) {
     fs.mkdirSync(`.cache`);
 }
+
+const addressToClientMap = new Map();
 
 // Helper function to create a wallet from a private key
 async function createWallet() {
@@ -55,7 +50,6 @@ async function createWallet() {
         console.error("KEY not set. Using random one.");
         console.log("Random private key: ", key);
     }
-
     const account = privateKeyToAccount(key);
     const wallet = createWalletClient({
         account,
@@ -68,7 +62,7 @@ async function createWallet() {
 
 // Helper function to set up XMTP client
 async function setupClient(address) {
-    let config = {
+    const config = {
         env: "dev",
         dbPath: `.cache/${address}-${"dev"}`,
     };
@@ -82,144 +76,244 @@ async function registerClientDefault(client) {
     const signatureBytes = toBytes(
         await wallet.signMessage({
             message: client.signatureText,
-        }),
+        })
     );
-    console.log("signatureBytes", signatureBytes);
-    console.log("client.signatureTextDefault", client.signatureText);
     client.addEcdsaSignature(signatureBytes);
     await client.registerIdentity();
     console.log("Client registered");
 }
-// Register the client if not already registered
+
+// Register the client with provided signature
 async function registerClient(client, signature) {
     if (!client.isRegistered) {
-    console.log("Trying to register client...")
-    client.addEcdsaSignature(toBytes(signature));
-    await client.registerIdentity();
-    console.log("Client registered successfully...");
-    console.log("client.isRegistered:",client.isRegistered);
+        client.addEcdsaSignature(toBytes(signature));
+        await client.registerIdentity();
+        console.log("Client registered successfully");
+    } else {
+        console.log("Client already registered");
     }
-    else console.log("Client already registered");
 }
 
-// API to send a message to a group
-app.post("/sendMessage", async (req, res) => {
-    const { groupId, messageContent } = req.body;
-    try {
-        const wallet = await createWallet();
-        const client = await setupClient(address, {
-            dbPath: `.cache/${wallet.account?.address}-${"dev"}`,
-        });
-        await registerClient(client, wallet);
-
-        const conversation = client.conversations.getConversationById(groupId);
-        if (!conversation) {
-            return res.status(404).send(`No conversation found with ID: ${groupId}`);
-        }
-
-        await conversation.send(messageContent);
-        io.emit('newMessage', { groupId, messageContent }); // Notify all clients via WebSocket
-        res.status(200).send(`Message sent to group ${groupId}: ${messageContent}`);
-    } catch (error) {
-        res.status(500).send(error.message);
-    }
-});
-
-// API to create a new group conversation
-app.post("/createGroup", async (req, res) => {
-    const { members } = req.body;
-    try {
-        const wallet = await createWallet();
-        const client = await setupClient(address, {
-            dbPath: `.cache/${wallet.account?.address}-${"dev"}`,
-        });
-        await registerClient(client, wallet);
-
-        const membersArray = members.split(',')
-        const canMessage = await client.canMessage(members);
-        if (!canMessage) {
-            return res.status(400).send("One or more members do not have v3 identity");
-        }
-
-        const conversation = await client.conversations.newConversation(members);
-        io.emit('newGroup', { groupId: conversation.id, members }); // Notify all clients about the new group
-        res.status(200).send({ groupId: conversation.id });
-    } catch (error) {
-        res.status(500).send(error.message);
-    }
-});
-
-// API to sync and list conversations
-app.get("/conversations", async (req, res) => {
-    try {
-        const wallet = await createWallet();
-        const client = await setupClient(address, {
-            dbPath: `.cache/${wallet.account?.address}-${"dev"}`,
-        });
-        await registerClient(client, wallet);
-
-        await client.conversations.sync();
-        const conversations = await client.conversations.list();
-        res.status(200).send({ conversations });
-    } catch (error) {
-        res.status(500).send(error.message);
-    }
-});
 // API to setup client
 app.post("/setupClient", async (req, res) => {
     const { address } = req.body;
-    console.log(typeof (address), address);
     try {
         const client = await setupClient(address);
         console.log("Inbox id: ", client.inboxId);
-        console.log("installation id: ", client.installationId);
+        console.log("Installation id: ", client.installationId);
         addressToClientMap.set(address, client);
         res.status(200).send({ signatureText: client.signatureText });
     } catch (error) {
         res.status(500).send(error.message);
     }
-});
+}); // clean
+
 // API to register client
 app.post("/registerClient", async (req, res) => {
     const { address, signature } = req.body;
     try {
         const client = addressToClientMap.get(address);
-        if (!client) {
-            res.status(500).send("Client not set up. First setup the client.");
+        await registerClient(client, signature);
+        res.status(200).send("Client registered successfully");
+    } catch (error) {
+        res.status(500).send(error.message);
+    }
+}); // clean
+
+// API to create a new group conversation
+app.post("/createGroup", async (req, res) => {
+    const { address, members, groupName, description, imageUrl } = req.body;
+    try {
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(400).send("Client isn't registered.");
             return;
         }
-        // await registerClientDefault(client);
-        await registerClient(client, signature);
-        res.status(200).send("success");
+        const membersArray = members.split(",");
+        const canMessage = await client.canMessage(membersArray);
+        if (!canMessage) {
+            return res.status(400).send("One or more members do not have v3 identity");
+        }
+        // TODO Fix optional params
+        const conversation = await client.conversations.newConversation(membersArray, 0, imageUrl, description);
+
+        io.emit('newGroup', { groupId: conversation.id, conversation: conversation });
+        res.status(200).send({ groupId: conversation.id, conversation: conversation });
     } catch (error) {
-        console.error("Error with Registering client. Please try again.")
-        console.log(error);
         res.status(500).send(error.message);
     }
 });
 
-// API to stream all messages
-app.get("/streamMessages", async (req, res) => {
+// API to update group details
+app.post("/updateGroup", async (req, res) => {
+    const { address, groupId, name, description, imageUrl } = req.body;
     try {
-        const wallet = await createWallet();
-        const client = await setupClient(address, {
-            dbPath: `.cache/${wallet.account?.address}-${"dev"}`,
-        });
-        await registerClient(client, wallet);
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(400).send("Client isn't registered.");
+            return;
+        }
+        const conversation = client.conversations.getConversationById(groupId);
+        if (!conversation) {
+            return res.status(404).send(`No conversation found with ID: ${groupId}`);
+        }
 
-        const stream = await client.conversations.streamAllMessages();
-        stream.on("data", (message) => {
-            console.log(`Streamed message: ${message.content}`);
-            io.emit('newMessageStream', { message }); // Push streamed messages to WebSocket clients
-        });
+        // Update conversation details
+        if (name) await conversation.updateName(name);
+        if (description) await conversation.updateDescription(description);
+        if (imageUrl) await conversation.updateImageUrl(imageUrl);
 
-        res.status(200).send("Streaming started. Check server logs for message streams.");
+        res.status(200).send("Group details updated successfully");
     } catch (error) {
         res.status(500).send(error.message);
     }
+}); // clean
+
+// API to add and remove members in a group
+app.post("/updateGroupMembers", async (req, res) => {
+    const { address, groupId, addMembers, removeMembers } = req.body;
+    try {
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(400).send("Client isn't registered.");
+            return;
+        }
+        const conversation = client.conversations.getConversationById(groupId);
+        if (!conversation) {
+            return res.status(404).send(`No conversation found with ID: ${groupId}`);
+        }
+
+        // Add or remove members
+        if (addMembers) await conversation.addMembers(addMembers.split(","));
+        if (removeMembers) await conversation.removeMembers(removeMembers.split(","));
+
+        res.status(200).send("Group members updated successfully");
+    } catch (error) {
+        res.status(500).send(error.message);
+    }
+}); // clean
+
+// API to manage group admins
+app.post("/updateGroupAdmins", async (req, res) => {
+    const { address, groupId, addAdmins, removeAdmins } = req.body;
+    try {
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(400).send("Client isn't registered.");
+            return;
+        }
+        const conversation = client.conversations.getConversationById(groupId);
+        if (!conversation) {
+            return res.status(404).send(`No conversation found with ID: ${groupId}`);
+        }
+
+        // Add or remove admins
+        if (addAdmins) await conversation.addAdmin(addAdmins);
+        if (removeAdmins) await conversation.removeAdmin(removeAdmins);
+
+        res.status(200).send("Group admins updated successfully");
+    } catch (error) {
+        res.status(500).send(error.message);
+    }
+}); // clean
+
+// API to send a message to a group
+app.post("/sendMessage", async (req, res) => {
+    const { address, groupId, messageContent } = req.body;
+    try {
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(500).send("Client isn't registered.");
+            return;
+        }
+        const conversation = client.conversations.getConversationById(groupId);
+        if (!conversation) {
+            return res.status(404).send(`No conversation found with ID: ${groupId}`);
+        }
+        await conversation.send(messageContent);
+
+        io.emit('newMessage', { groupId, messageContent }); // Notify all clients via WebSocket
+        res.status(200).send(`Message sent to group ${groupId}: ${messageContent}`);
+    } catch (error) {
+        res.status(500).send(error.message);
+    }
+}); // clean
+
+// API to list all group conversations
+app.post("/conversations", async (req, res) => {
+    const { address } = req.body;
+    try {
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(500).send("Client isn't registered.");
+            return;
+        }
+        await client.conversations.sync();
+        const rawConversations = await client.conversations.list();
+        const conversations = rawConversations.map((group) => {
+            return {
+                id: group.id,
+                name: group.name,
+                imageUrl: group.imageUrl,
+                description: group.description,
+                pinnedFrameUrl: group.pinnedFrameUrl,
+                isActive: group.isActive,
+                addedByInboxId: group.addedByInboxId,
+                createdAtNs: group.createdAtNs,
+                createdAt: new Date(group.createdAtNs / 1000000).toISOString(),  // Convert to ISO string
+                metadata: {
+                    creatorInboxId: group.addedByInboxId,
+                    conversationType: "default"
+                },
+                members: group.members.map(member => ({
+                    inboxId: member.inboxId,
+                    accountAddresses: member.accountAddresses,
+                    installationIds: member.installationIds,
+                    permissionLevel: member.permissionLevel
+                })),
+                admins: group.admins,
+                superAdmins: group.superAdmins,
+                permissions: {
+                    policyType: "group-permissions-policyType",
+                    policySet: "group-permissions-policySet"
+                }
+            };
+        });
+        res.status(200).send({ conversations });
+    } catch (error) {
+        res.status(500).send(error.message);
+    }
+}); // clean
+
+// API to sync and fetch group messages by group ID
+app.get("/:id/messages", async (req, res) => {
+    const { address } = req.body;
+    const { id } = req.params;
+    try {
+        const client = await setupClient(address);
+        if (!client.isRegistered) {
+            res.status(500).send("Client isn't registered.");
+            return;
+        }
+        const conversation = client.conversations.getConversationById(id);
+        if (!conversation) {
+            return res.status(404).send("Group not found");
+        }
+        await conversation.sync();
+        const messages = conversation.messages();
+        res.status(200).send(messages);
+    } catch (error) {
+        res.status(500).send(error.message);
+    }
+}); // clean
+
+// API to test WebSocket message sending
+app.get("/testnewmsg", (req, res) => {
+    io.emit('message', "Test message sent!");
+    res.status(200).send("Test message sent.");
 });
 
-
+// Start the server
 server.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
