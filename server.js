@@ -231,8 +231,9 @@ app.post("/sendMessage", async (req, res) => {
             return res.status(404).send(`No conversation found with ID: ${groupId}`);
         }
         await conversation.send(messageContent);
+        const name = conversation.name;
 
-        io.emit('newMessage', { groupId, messageContent }); // Notify all clients via WebSocket
+        io.emit('newMessage', { groupId, groupName: name, sender: address, messageContent }); // Notify all clients via WebSocket
         res.status(200).send(`Message sent to group ${groupId}: ${messageContent}`);
     } catch (error) {
         res.status(500).send(error.message);
@@ -250,6 +251,9 @@ app.post("/conversations", async (req, res) => {
         }
         await client.conversations.sync();
         const rawConversations = await client.conversations.list();
+        rawConversations.forEach(async (conv) => {
+            await conv.sync();
+        });
         const conversations = rawConversations.map((group) => {
             return {
                 id: group.id,
@@ -276,7 +280,9 @@ app.post("/conversations", async (req, res) => {
                 permissions: {
                     policyType: "group-permissions-policyType",
                     policySet: "group-permissions-policySet"
-                }
+                },
+                latestMessages: group.messages()
+                // latestMessage: group.messages()[group.messages().length - 1]
             };
         });
         res.status(200).send({ conversations });
@@ -286,7 +292,13 @@ app.post("/conversations", async (req, res) => {
 }); // clean
 
 // API to sync and fetch group messages by group ID
-app.get("/:id/messages", async (req, res) => {
+app.post("/:id/messages", async (req, res) => {
+    console.log(req.params);
+    console.log(req.body);
+    console.log(req.data);
+
+    console.log("\n");
+    // console.log(req);
     const { address } = req.body;
     const { id } = req.params;
     try {
